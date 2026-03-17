@@ -34,6 +34,93 @@ class MemoryHit:
 
 
 class MemoryStore:
+    def __init__(self) -> None:
+        self._task_complete_hooks: List[Callable] = []
+        self._last_consolidation: Dict[str, float] = {}
+
+    async def register_task_complete_hook(self, hook: Callable) -> None:
+        """Register a hook to be called when a task completes."""
+        self._task_complete_hooks.append(hook)
+
+    async def _on_task_complete(self, session_id: str, task_id: str, result: Dict[str, Any]) -> None:
+        """Called when a task completes. Triggers auto-consolidation if enabled."""
+        if not session_id:
+            return
+
+        # Check if auto-consolidation is enabled
+        if not getattr(settings, "auto_consolidate_on_task_complete", False):
+            return
+
+        # Check minimum interval
+        last = self._last_consolidation.get(session_id, 0.0)
+        now = time.time()
+        min_interval = int(getattr(settings, "auto_consolidate_min_interval_s", 1800))
+        if now - last < min_interval:
+            return
+
+        # Trigger consolidation
+        try:
+            await self.add_episode(
+                session_id=session_id,
+                task_id=task_id,
+                title="Task completed",
+                summary=f"Task {task_id} completed with result: {result.get('status', 'unknown')}",
+                tags=["task_complete"],
+                data={"task_id": task_id, "result": result},
+            )
+            await self.consolidate(
+                session_id=session_id,
+                dry_run=False,
+                episode_limit=int(getattr(settings, "auto_consolidate_episode_limit", 50)),
+                max_lessons=int(getattr(settings, "auto_consolidate_max_lessons", 10)),
+                include_preferences=bool(getattr(settings, "auto_consolidate_include_preferences", True)),
+                preferences_scope=str(getattr(settings, "auto_consolidate_preferences_scope", "session")),
+            )
+            self._last_consolidation[session_id] = now
+        except Exception:
+            # Never block task completion
+            pass
+
+        # Call registered hooks
+        for hook in self._task_complete_hooks:
+            try:
+                await hook(session_id, task_id, result)
+            except Exception:
+                pass
+
+    async def _on_session_end(self, session_id: str) -> None:
+        """Called when a session ends. Triggers final consolidation."""
+        if not session_id:
+            return
+
+        # Always consolidate at session end (not subject to interval limits)
+        try:
+            # Add final episode
+            await self.add_episode(
+                session_id=session_id,
+                task_id=None,
+                title="Session ended",
+                summary=f"Session {session_id} completed",
+                tags=["session_end"],
+                data={"session_id": session_id},
+            )
+
+            # Final consolidation
+            await self.consolidate(
+                session_id=session_id,
+                dry_run=False,
+                episode_limit=int(getattr(settings, "auto_consolidate_episode_limit", 50)),
+                max_lessons=int(getattr(settings, "auto_consolidate_max_lessons", 10)),
+                include_preferences=bool(getattr(settings, "auto_consolidate_include_preferences", True)),
+                preferences_scope=str(getattr(settings, "auto_consolidate_preferences_scope", "session")),
+            )
+
+            # Trigger memory consolidation (decay/merge/prune)
+            await self.consolidate_memory(dry_run=False)
+        except Exception:
+            # Never block session ending
+            pass
+
     async def ensure_indexed(self, root_path: str) -> Dict[str, Any]:
         """Incrementally index the workspace into SQLite FTS.
 

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import math
 import os
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -31,20 +35,83 @@ def _get_fastembed_model():
         try:
             from fastembed import TextEmbedding
             # Default to multilingual model (supports 50+ languages including Russian)
-            model_name = getattr(settings, "vector_memory_model", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+            model_name = getattr(
+                settings,
+                "embeddings_fastembed_model",
+                getattr(
+                    settings,
+                    "vector_memory_model",
+                    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                ),
+            )
             _fastembed_model = TextEmbedding(model_name=model_name)
         except ImportError:
             raise EmbeddingsError("FastEmbed not installed. Run: pip install fastembed")
+        except Exception as e:
+            raise EmbeddingsError(f"FastEmbed initialization failed: {e}")
     return _fastembed_model
+
+
+def _hash_fallback_embed(text: str) -> EmbeddingsResult:
+    """Deterministic offline fallback embedding.
+
+    Produces a stable normalized vector without external network/model downloads.
+    This is a resilience fallback, not a quality replacement for real embeddings.
+    """
+    dim = int(
+        getattr(
+            settings,
+            "embeddings_hash_fallback_dimensions",
+            getattr(settings, "vector_memory_dimensions", 384),
+        )
+        or 384
+    )
+    if dim <= 0:
+        dim = 384
+
+    vec = [0.0] * dim
+    text_n = (text or "").strip().lower()
+    if not text_n:
+        return EmbeddingsResult(vector=vec, dim=dim)
+
+    toks = re.findall(r"[^\W_]{2,}", text_n, flags=re.UNICODE)
+    if not toks:
+        toks = [text_n[i : i + 3] for i in range(max(1, len(text_n) - 2))]
+
+    for i, tok in enumerate(toks[:4096]):
+        h = hashlib.blake2b(f"{tok}:{i}".encode("utf-8", errors="ignore"), digest_size=16).digest()
+        idx = int.from_bytes(h[:4], "big", signed=False) % dim
+        sign = 1.0 if (h[4] & 1) == 0 else -1.0
+        weight = 0.5 + (h[5] / 255.0)
+        vec[idx] += sign * weight
+
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm > 0.0:
+        vec = [v / norm for v in vec]
+    return EmbeddingsResult(vector=vec, dim=dim)
 
 
 async def _fastembed_encode(text: str) -> EmbeddingsResult:
     """Encode text using FastEmbed (local CPU)."""
-    model = _get_fastembed_model()
-    # FastEmbed is sync but fast on CPU
-    import asyncio
-    loop = asyncio.get_event_loop()
-    vectors = await loop.run_in_executor(None, lambda: list(model.embed([text])))
+    timeout_s = float(getattr(settings, "embeddings_fastembed_timeout_s", 20.0) or 20.0)
+    loop = asyncio.get_running_loop()
+
+    # FastEmbed can block while trying to download a model; keep it bounded.
+    try:
+        model = await asyncio.wait_for(loop.run_in_executor(None, _get_fastembed_model), timeout=timeout_s)
+    except asyncio.TimeoutError as e:
+        raise EmbeddingsError(f"FastEmbed initialization timed out after {timeout_s:.1f}s") from e
+
+    try:
+        vectors = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: list(model.embed([text]))),
+            timeout=timeout_s,
+        )
+    except asyncio.TimeoutError as e:
+        raise EmbeddingsError(f"FastEmbed embedding timed out after {timeout_s:.1f}s") from e
+
+    if not vectors:
+        raise EmbeddingsError("FastEmbed returned no vectors")
     vec = vectors[0]
     return EmbeddingsResult(vector=list(vec), dim=len(vec))
 
@@ -244,8 +311,12 @@ async def embed_text(text: str) -> EmbeddingsResult:
         try:
             return await _fastembed_encode(text)
         except EmbeddingsError:
+            if bool(getattr(settings, "embeddings_fastembed_allow_hash_fallback", True)):
+                return _hash_fallback_embed(text)
             raise
         except Exception as e:
+            if bool(getattr(settings, "embeddings_fastembed_allow_hash_fallback", True)):
+                return _hash_fallback_embed(text)
             raise EmbeddingsError(f"FastEmbed failed: {e}")
 
     if provider == "ollama":

@@ -116,8 +116,8 @@ class Settings(BaseSettings):
 
     # Durable memory consolidation
     # Optional: after each task, deterministically promote useful signals from recent
-    # episodes into Lessons/Preferences. Disabled by default to avoid surprising writes.
-    auto_consolidate_on_task_complete: bool = False
+    # episodes into Lessons/Preferences. Enabled to auto-save lessons/preferences after tasks.
+    auto_consolidate_on_task_complete: bool = True
     # Minimum seconds between auto-consolidations for the same session.
     auto_consolidate_min_interval_s: int = 1800
     auto_consolidate_episode_limit: int = 50
@@ -467,6 +467,14 @@ class Settings(BaseSettings):
     # Embeddings / Vector memory (optional)
     # embeddings_provider: fastembed | ollama | openai | none
     embeddings_provider: str = "fastembed"
+    # FastEmbed-specific model selector.
+    # Kept separate from vector_memory_model for explicit env compatibility:
+    # OMNIMIND_EMBEDDINGS_FASTEMBED_MODEL
+    embeddings_fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    # Guardrails for offline/slow environments.
+    embeddings_fastembed_timeout_s: float = 20.0
+    embeddings_fastembed_allow_hash_fallback: bool = True
+    embeddings_hash_fallback_dimensions: int = 384
     embeddings_base_url: str = "http://localhost:11434"
     embeddings_model: str = "nomic-embed-text"
     embeddings_pull_missing: bool = True
@@ -785,6 +793,15 @@ def _postprocess_settings() -> None:
 
     Docker deployments are unaffected because docker-compose sets OMNIMIND_WORKSPACE.
     """
+    # Backward compatibility with older prompt/docs examples that used
+    # AUTO_CONSOLIDATE_ON_TASK_COMPLETE without OMNIMIND_ prefix.
+    if (
+        os.getenv("OMNIMIND_AUTO_CONSOLIDATE_ON_TASK_COMPLETE") is None
+        and os.getenv("AUTO_CONSOLIDATE_ON_TASK_COMPLETE") is not None
+    ):
+        raw = (os.getenv("AUTO_CONSOLIDATE_ON_TASK_COMPLETE") or "").strip().lower()
+        settings.auto_consolidate_on_task_complete = raw in ("1", "true", "yes", "on", "y")
+
     if os.getenv("OMNIMIND_WORKSPACE"):
         return
 

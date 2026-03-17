@@ -405,16 +405,76 @@ async def memory_delete(key: str, type: str = "lesson") -> Dict[str, Any]:
 
 @mcp.tool()
 @_with_db_ready
+async def memory_add_episode(
+    session_id: str,
+    title: str,
+    summary: str,
+    task_id: str = "",
+    tags: Optional[List[str]] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Add an episode to the session memory.
+
+    Episodes are short-term memory entries that can be consolidated into
+    long-term lessons and preferences. Use this after completing tasks
+    to record what happened for later consolidation.
+
+    Args:
+        session_id: Current session identifier
+        title: Short title describing the episode
+        summary: Detailed summary of what happened
+        task_id: Optional task identifier (pass empty string if not needed)
+        tags: Optional list of tags for categorization
+        data: Optional additional structured data
+
+    Returns:
+        dict with ok=True and episode_id on success
+    """
+    return await memory.add_episode(
+        session_id=session_id,
+        task_id=task_id if task_id else None,
+        title=title,
+        summary=summary,
+        tags=tags,
+        data=data,
+    )
+
+
+@mcp.tool()
+@_with_db_ready
+async def memory_list_episodes(
+    session_id: str,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """List episodes for a session."""
+    return await memory.list_episodes(session_id, limit=limit)
+
+
+@mcp.tool()
+@_with_db_ready
+async def memory_search_episodes(
+    session_id: str,
+    query: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Search episodes by query."""
+    return await memory.search_episodes(session_id, query, limit=limit)
+
+
+@mcp.tool()
+@_with_db_ready
 async def memory_consolidate(
     session_id: str,
     dry_run: bool = True,
     max_lessons: int = 10,
+    use_llm: bool = True,
 ) -> Dict[str, Any]:
     """Consolidate recent episodes into lessons and preferences."""
     return await memory.consolidate(
         session_id=session_id,
         dry_run=dry_run,
         max_lessons=max_lessons,
+        use_llm=use_llm,
     )
 
 

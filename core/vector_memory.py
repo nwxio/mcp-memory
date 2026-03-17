@@ -529,8 +529,8 @@ class VectorMemory:
                         vec = emb.vector
                         nrm = _norm(vec)
                         await conn.execute(
-                            "INSERT OR REPLACE INTO vector_chunks (id, path, chunk_index, content, embedding_json, embedding_dim, embedding_norm, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO vector_chunks (id, path, chunk_index, content, embedding_json, embedding_dim, embedding_norm, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET path=EXCLUDED.path, chunk_index=EXCLUDED.chunk_index, content=EXCLUDED.content, embedding_json=EXCLUDED.embedding_json, embedding_dim=EXCLUDED.embedding_dim, embedding_norm=EXCLUDED.embedding_norm, updated_at=EXCLUDED.updated_at",
                             (
                                 new_id("vch"),
                                 rel,
@@ -802,8 +802,8 @@ class VectorMemory:
                         vec = emb.vector
                         nrm = _norm(vec)
                         await conn.execute(
-                            "INSERT OR REPLACE INTO vector_chunks (id, path, chunk_index, content, embedding_json, embedding_dim, embedding_norm, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO vector_chunks (id, path, chunk_index, content, embedding_json, embedding_dim, embedding_norm, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET path=EXCLUDED.path, chunk_index=EXCLUDED.chunk_index, content=EXCLUDED.content, embedding_json=EXCLUDED.embedding_json, embedding_dim=EXCLUDED.embedding_dim, embedding_norm=EXCLUDED.embedding_norm, updated_at=EXCLUDED.updated_at",
                             (
                                 new_id("vch"),
                                 rel,
@@ -896,9 +896,10 @@ class VectorMemory:
         cand = int(getattr(settings, "vector_search_candidate_limit", 2500) or 2500)
         if cand < 200:
             cand = 200
+        # Note: PostgreSQL doesn't have rowid, use id for ordering
         sql = (
-            "SELECT path, chunk_index, content, embedding_json, embedding_norm, embedding_dim "
-            "FROM vector_chunks WHERE embedding_dim = ? ORDER BY rowid DESC LIMIT ?"
+            "SELECT id, path, chunk_index, content, embedding_json, embedding_norm, embedding_dim "
+            "FROM vector_chunks WHERE embedding_dim = ? ORDER BY id DESC LIMIT ?"
         )
         try:
             async with db.connect() as conn:

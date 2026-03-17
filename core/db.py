@@ -256,6 +256,63 @@ def _pg_transform_sql(sql: str, *, schema: bool) -> tuple[str, bool]:
         if " on conflict " not in stmt.lower():
             stmt = stmt.rstrip(";") + " ON CONFLICT DO NOTHING"
 
+    # Handle INSERT OR REPLACE for PostgreSQL
+    # INSERT OR REPLACE INTO table (col1, col2, ...) VALUES (?, ?, ...)
+    # -> INSERT INTO table (col1, col2, ...) VALUES (?, ?, ...) ON CONFLICT (pk) DO UPDATE SET col1=EXCLUDED.col1, ...
+    if re.match(r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+", stmt, flags=re.IGNORECASE):
+        # Extract table name and columns
+        insert_match = re.match(
+            r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*(?:\(([^)]+)\))?\s*VALUES\s*\(",
+            stmt,
+            flags=re.IGNORECASE,
+        )
+        if insert_match:
+            table = insert_match.group(1).lower()
+            cols_str = insert_match.group(2)
+            # Handle case where columns are not specified (INSERT OR REPLACE INTO table VALUES (...))
+            if cols_str:
+                cols = [c.strip() for c in cols_str.split(",")]
+            else:
+                # Fallback: use common columns for known tables
+                default_cols = {
+                    "vector_chunks": ["id", "path", "chunk_index", "content", "embedding_json", "embedding_dim", "embedding_norm", "updated_at"],
+                    "llm_cache": ["prompt_hash", "response", "created_at"],
+                    "lessons": ["key", "lesson", "meta_json", "created_at", "updated_at"],
+                    "preferences": ["key", "value_json", "source", "updated_at"],
+                    "episodes": ["id", "session_id", "title", "summary", "created_at"],
+                    "memory_docs": ["id", "path", "content", "updated_at"],
+                    "vector_files_meta": ["path", "mtime", "size", "sha256", "updated_at"],
+                    "memory_index_state": ["name", "last_scan_at", "stats_json"],
+                    "procedural_memory": ["key", "title", "steps", "metadata", "updated_at"],
+                    "semantic_entities": ["name", "entity_type", "properties", "updated_at"],
+                }
+                cols = default_cols.get(table, ["id"])
+            # Map known tables to their primary keys
+            pk_map = {
+                "vector_chunks": "id",
+                "llm_cache": "prompt_hash",
+                "lessons": "key",
+                "preferences": "key",
+                "episodes": "id",
+                "memory_docs": "id",
+                "vector_files_meta": "path",
+                "memory_index_state": "name",
+                "procedural_memory": "key",
+                "semantic_entities": "name",
+            }
+            pk = pk_map.get(table, "id")
+            # Remove INSERT OR REPLACE prefix
+            stmt = re.sub(
+                r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+",
+                "INSERT INTO ",
+                stmt,
+                flags=re.IGNORECASE,
+            ).strip()
+            # Add ON CONFLICT ... DO UPDATE SET ...
+            if " on conflict " not in stmt.lower():
+                update_cols = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols])
+                stmt = stmt.rstrip(";") + f" ON CONFLICT ({pk}) DO UPDATE SET {update_cols}"
+
     stmt = _replace_qmark_placeholders(stmt)
     return stmt, False
 
